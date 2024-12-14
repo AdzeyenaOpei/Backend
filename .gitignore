@@ -1,0 +1,17 @@
+/node_modules/
+package-lock.json
+.env
+.env.local
+.env.*.local
+logs
+*.log
+npm-debug.log*
+pids
+*.pid
+*.seed
+*.pid.lock
+uploads/
+.idea/
+.vscode/
+*.swp
+*.swo
