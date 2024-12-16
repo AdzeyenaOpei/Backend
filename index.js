@@ -31,16 +31,16 @@ app.get("/", (req, res) => {
 
 
 app.post("/register", async (req, res) => {
-  const { name, email, password, role } = req.body;
-  if (!name || !email || !password || !role) {
+  const { name, email, password, role, preferences } = req.body;
+  if (!name || !email || !password || !role || !preferences) {
     console.log("Missing required fields");
     return res.status(400).json({ error: "Missing required fields" });
   }
   try {
     const userRole = role || "user";
     const user = await pool.query(
-      'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role',
-      [name, email, bcrypt.hashSync(password, bcryptSalt), userRole]
+      'INSERT INTO users (name, email, password, role, preferences) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, role, preferences',
+      [name, email, bcrypt.hashSync(password, bcryptSalt), userRole, preferences]
     );
 
     res.status(201).json({ message: "Registration successful", user: user.rows[0] });
@@ -60,15 +60,13 @@ app.post("/login", async (req, res) => {
 
   try { 
     const user = await pool.query('SELECT * FROM users WHERE email = $1',[email]);
-
-    console.log(user);
     if (user.rows.length === 0) {
       console.log("User not found");
       return res.status(404).json({ error: "User not found" });
     }
 
-    // const passOk = bcrypt.compareSync(password, user.rows[0].password);
-    const passOk = password === user.rows[0].password;
+    const passOk = bcrypt.compare(password, user.rows[0].password);
+    // const passOk = password === user.rows[0].password;
     if (!passOk) {
       console.log("Invalid password");
       return res.status(401).json({ error: "Invalid password" });
@@ -81,16 +79,13 @@ app.post("/login", async (req, res) => {
   }
 });
 
-app.get("/profile", async (req, res) => {
-
+app.get("/profile/:id", async (req, res) => {
   try {
-    const decoded = jwt.verify(token, jwtSecret);
     const user = await pool.query(
       'SELECT id, name, email, role FROM users WHERE id = $1',
-      [decoded.id]
+      [req.params.id]
     );
     if (!user) return res.status(404).json({ error: "User not found" });
-
     res.json(user);
   } catch (err) {
     console.error("Error verifying token:", err);
@@ -100,7 +95,7 @@ app.get("/profile", async (req, res) => {
 
 app.get("/events", async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM events ORDER BY date DESC');
+    const result = await pool.query('SELECT * FROM events ORDER BY event_date DESC');
     res.json(result.rows);
   } catch (error) {
     console.error("Failed to fetch events:", error);
@@ -124,70 +119,73 @@ app.get("/event/:id", async (req, res) => {
 });
 
 app.post("/createEvent", async (req, res) => {
-  const { title, description, eventDate, eventTime, location } = req.body;
-  const token = req.cookies.token;
-  if (!token) return res.status(401).json({ error: "No token provided" });
+  const { user_id, event_name, available_seats, event_date, event_time, location } = req.body;
+
+  console.log(`userId: ${user_id}`);
 
   try {
-    const decoded = jwt.verify(token, jwtSecret);
-    
     // Check if user is admin
     const userResult = await pool.query(
       'SELECT role FROM users WHERE id = $1',
-      [decoded.id]
+      [user_id]
     );
+
     
     if (!userResult.rows[0] || userResult.rows[0].role !== 'admin') {
       return res.status(403).json({ error: "Only admins can create events" });
     }
 
-
-
-
-    if (!title || !description || !eventDate || !eventTime || !location) {
+    if (!event_name || !available_seats || !event_date || !event_time || !location) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     const result = await pool.query(
-      'INSERT INTO events (title, description, date, time, location, image) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [title, description, eventDate, eventTime, location, image]
+      'INSERT INTO events (event_name, available_seats, event_date, event_time, location) VALUES ($1, $2, $3, $4, $5)',
+      [event_name, available_seats, event_date, event_time, location]
     );
-
-    res.status(201).json(result.rows[0]);
+    console.log(`Event created successfully: ${result.rows[0]}`);
+    res.status(201).json({ message: "Event created successfully"});
   } catch (error) {
-    console.error("Error creating event:", error);
+    console.error("Error creating event:", error);  
     res.status(500).json({ error: "Failed to create event", details: error.message });
   }
 });
 
 app.post("/rsvp", async (req, res) => {
-  const { userId, eventId, numberOfSeats } = req.body;
+  const { userId, eventId, rsvpDate } = req.body;
 
   try {
     // Check available capacity 
     const eventResult = await pool.query(
-      'SELECT capacity FROM events WHERE id = $1',
+      'SELECT available_seats FROM events WHERE id = $1',
       [eventId]
     );
 
-    const currentRSVPsResult = await pool.query(
-      'SELECT COALESCE(SUM(number_of_seats), 0) as total_seats FROM rsvps WHERE event_id = $1 AND status = $2',
-      [eventId, 'confirmed']
-    );
-
-    const event = eventResult.rows[0];
-    const currentRSVPs = parseInt(currentRSVPsResult.rows[0].total_seats);
-
-    if (event.capacity < (currentRSVPs + numberOfSeats)) {
+    if (eventResult.rows[0].available_seats < 1) {
       return res.status(400).json({ error: 'Not enough seats available' });
     }
 
-    const result = await pool.query(
-      'INSERT INTO rsvps (user_id, event_id, number_of_seats, status) VALUES ($1, $2, $3, $4) RETURNING *',
-      [userId, eventId, numberOfSeats, 'pending']
+    const existingRsvp = await pool.query(
+      "SELECT * FROM rsvps WHERE event_id = $1 AND user_id = $2",
+      [eventId, userId]
     );
 
-    res.status(201).json(result.rows[0]);
+    if (existingRsvp.rows.length > 0) {
+      return res.status(400).json({ error: "User has already RSVP'd for this event" });
+    }
+    
+    await pool.query(
+      'INSERT INTO rsvps (user_id, event_id, rsvp_date) VALUES ($1, $2, $3)',
+      [userId, eventId, rsvpDate]
+    );
+    
+    await pool.query(
+      'UPDATE events SET available_seats = available_seats - 1 WHERE id = $1',
+      [eventId]
+    );
+
+    console.log(`RSVP created successfully for event ${eventId} by user ${userId}`);
+    res.status(201).json({ message: "RSVP created successfully" });
   } catch (error) {
     console.error("Error creating RSVP:", error);
     res.status(500).json({ error: "Failed to create RSVP", details: error.message });
