@@ -80,6 +80,11 @@ app.post("/login", async (req, res) => {
 });
 
 app.get("/profile/:id", async (req, res) => {
+  const { id } = req.params;
+  if (id === undefined) {
+    console.log("No ID was sent to the backend");
+    return res.status(400).json({ error: "No ID was found" });
+  }
   try {
     const user = await pool.query(
       'SELECT id, name, email, role FROM users WHERE id = $1',
